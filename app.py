@@ -18,7 +18,6 @@ os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def cleanup_old_files():
-    """Delete files older than 2 hours"""
     now = time.time()
     for folder in [INPUT_DIR, OUTPUT_DIR]:
         for filepath in glob.glob(os.path.join(folder, "*")):
@@ -30,7 +29,7 @@ def cleanup_old_files():
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "PocketVault 2yxa Engine v2 Ready"})
+    return jsonify({"status": "PocketVault 2yxa Engine v3 Ready"})
 
 @app.route("/convert", methods=["POST"])
 def convert():
@@ -44,26 +43,25 @@ def convert():
     input_path = None
     original_title = "media"
 
-    # 1. PROCESS URL (YouTube, TikTok, or Direct link)
+    # 1. PROCESS URL
     if url:
-        # Check if user tried to paste an InfinityFree link
         if "ct.ws" in url or "epizy.com" in url or "infinityfree" in url:
             return jsonify({
                 "success": False, 
-                "error": "InfinityFree blocks external downloads. Please use the 'Upload File' tab instead for this file!"
+                "error": "InfinityFree blocks external scripts. Use the 'Upload File' tab for this file!"
             }), 400
 
-        # Try downloading with yt-dlp first (YouTube / TikTok / Socials)
+        # Best extractor configuration to bypass YouTube datacenter blocks
         ydl_opts = {
             'outtmpl': os.path.join(INPUT_DIR, f"{uid}_%(title)s.%(ext)s"),
             'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
             'quiet': True,
             'no_warnings': True,
             'noplaylist': True,
-            # Bypass YouTube datacenter IP block using iOS/Android clients
             'extractor_args': {
                 'youtube': {
-                    'player_client': ['ios', 'android', 'mweb']
+                    'player_client': ['tv', 'web_embedded', 'android_vr'],
+                    'player_skip': ['webpage', 'configs']
                 }
             }
         }
@@ -75,12 +73,12 @@ def convert():
                 downloaded_files = glob.glob(os.path.join(INPUT_DIR, f"{uid}_*"))
                 if downloaded_files:
                     input_path = downloaded_files[0]
-        except Exception:
-            # Fallback for Direct Links (e.g. https://example.com/song.mp3 or video.mp4)
+        except Exception as yt_err:
+            # Fallback for Direct Links (.mp4 / .mp3)
             try:
                 headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
                 r = requests.get(url, headers=headers, stream=True, timeout=30)
-                if r.status_code == 200:
+                if r.status_code == 200 and 'video' in r.headers.get('content-type', '') or 'audio' in r.headers.get('content-type', '') or url.endswith(('.mp4', '.3gp', '.mp3')):
                     parsed_path = urllib.parse.urlparse(url).path
                     ext = os.path.splitext(parsed_path)[1] or ".mp4"
                     original_title = os.path.splitext(os.path.basename(parsed_path))[0] or "web_media"
@@ -88,8 +86,10 @@ def convert():
                     with open(input_path, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=8192):
                             f.write(chunk)
-            except Exception as e:
-                return jsonify({"success": False, "error": f"Failed to download link: {str(e)}"}), 400
+                else:
+                    return jsonify({"success": False, "error": f"YouTube/Link error: {str(yt_err)}"}), 400
+            except Exception:
+                return jsonify({"success": False, "error": f"Download failed: {str(yt_err)}"}), 400
 
     # 2. PROCESS DIRECT FILE UPLOAD
     elif "file" in request.files:
@@ -106,29 +106,26 @@ def convert():
         return jsonify({"success": False, "error": "No file or URL provided"}), 400
 
     if not input_path or not os.path.exists(input_path):
-        return jsonify({"success": False, "error": "Could not retrieve media file"}), 500
+        return jsonify({"success": False, "error": "File was not downloaded. Try another link or upload directly."}), 500
 
-    # Prepare Output
+    # Clean filename
     safe_title = "".join(c for c in original_title if c.isalnum() or c in (' ', '-', '_')).rstrip()[:40]
     out_filename = f"{safe_title}_{uid}.{target_format}"
     output_path = os.path.join(OUTPUT_DIR, out_filename)
 
-    # Parse resolution safely
     if 'x' in resolution:
         res_w, res_h = resolution.split('x')
     else:
         res_w, res_h = '176', '144'
 
-    # 3. BULLETPROOF FFMPEG COMMANDS
+    # 3. FFMPEG TRANSCODING
     if target_format == "mp3":
-        # Universal MP3 conversion
         cmd = [
             "ffmpeg", "-y", "-i", input_path,
             "-vn", "-ar", "44100", "-ac", "2", "-b:a", "128k",
             output_path
         ]
     elif target_format == "3gp":
-        # 3GP: Uses MPEG4 video + AAC audio (Supported on all phones & doesn't crash on odd screen sizes)
         cmd = [
             "ffmpeg", "-y", "-i", input_path,
             "-vf", f"scale={res_w}:{res_h}:force_original_aspect_ratio=decrease,pad={res_w}:{res_h}:(ow-iw)/2:(oh-ih)/2,setsar=1",
@@ -138,7 +135,6 @@ def convert():
             output_path
         ]
     elif target_format == "mp4":
-        # Android MP4: Forces H.264 + YUV420P (Works on every Android screen without glitching)
         cmd = [
             "ffmpeg", "-y", "-i", input_path,
             "-vf", f"scale={res_w}:{res_h}:force_original_aspect_ratio=decrease,pad={res_w}:{res_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,format=yuv420p",
@@ -149,13 +145,11 @@ def convert():
     else:
         return jsonify({"success": False, "error": "Unsupported target format"}), 400
 
-    # 4. EXECUTE CONVERSION
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         if proc.returncode != 0:
             err_msg = proc.stderr.decode('utf-8', errors='ignore')
-            # Extract last 3 lines of ffmpeg error
             short_err = "\n".join(err_msg.strip().splitlines()[-3:])
             return jsonify({"success": False, "error": f"FFmpeg error: {short_err}"}), 500
 
@@ -163,7 +157,6 @@ def convert():
             file_bytes = os.path.getsize(output_path)
             file_size_mb = round(file_bytes / (1024 * 1024), 2)
             
-            # Clean up input file
             if os.path.exists(input_path):
                 os.remove(input_path)
 
