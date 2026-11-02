@@ -101,48 +101,75 @@ def make_circle_crop(img, size, border_color=(250, 204, 21, 255), border_width=4
     out_draw.ellipse((1, 1, size - 2, size - 2), outline=border_color, width=border_width)
     return output
 
+def js_djb2(s):
+    """Exact Python replica of Phoneky's JavaScript djb2 hash algorithm"""
+    h = 5381
+    for char in s:
+        h = ((h << 5) + h) + ord(char)
+        h = h & 0xFFFFFFFF
+    if h >= 0x80000000:
+        h -= 0x100000000
+    return hex(abs(h))[2:]
+
 def resolve_phoneky_link(phoneky_url):
-    """Inspects a Phoneky download page and finds the real downloadwap.com .jar URL using mobile headers"""
+    """Automatically solves Phoneky's 'Checking your browser...' firewall and extracts the real .jar"""
     if phoneky_url.endswith('.jar'):
         return phoneky_url, None
 
-    mobile_headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Sec-Fetch-Dest': 'document',
-        'Sec-Fetch-Mode': 'navigate',
-        'Sec-Fetch-Site': 'none',
-        'Upgrade-Insecure-Requests': '1'
+    ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    headers = {
+        'User-Agent': ua,
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9'
     }
+    session = requests.Session()
+    session.headers.update(headers)
 
     game_title = None
-    session = requests.Session()
 
     try:
-        r = session.get(phoneky_url, headers=mobile_headers, timeout=20, allow_redirects=True)
-        if r.status_code == 403 and "mobile.phoneky.com" in phoneky_url:
-            desktop_url = phoneky_url.replace("mobile.phoneky.com", "phoneky.com")
-            r = session.get(desktop_url, headers=mobile_headers, timeout=20, allow_redirects=True)
+        r = session.get(phoneky_url, timeout=20, allow_redirects=True)
+        html = r.text
 
-        if r.status_code == 200:
-            tm = re.search(r'<title>(.*?)</title>', r.text, re.IGNORECASE)
-            if tm:
-                t_str = tm.group(1).split('|')[0].split('-')[0].strip()
-                if t_str:
-                    game_title = t_str
+        # Detect Phoneky's "Checking your browser..." challenge
+        if "Checking your browser" in html or "fw_jc" in html:
+            t_match = re.search(r"var t='([^']+)'", html)
+            ip_match = re.search(r"var ip='([^']+)'", html)
+            k_match = re.search(r"var k='([^']+)'", html)
+            redir_match = re.search(r"window\.location\.replace\('([^']+)'\)", html)
 
-            # 1. Search for .jar link in page
-            jar_matches = re.findall(r'href=["\'](https?://[^"\']+\.jar[^"\']*)["\']', r.text)
-            if jar_matches:
-                return jar_matches[0], game_title
+            if t_match and ip_match and k_match and redir_match:
+                t = t_match.group(1)
+                ip = ip_match.group(1)
+                k = k_match.group(1)
+                redir_path = redir_match.group(1)
 
-            # 2. Search for downloadwap link
-            wap_matches = re.findall(r'href=["\'](https?://[^"\']*downloadwap\.com/[^"\']*)["\']', r.text)
-            if wap_matches:
-                return wap_matches[0], game_title
+                fp = f"{ua}|1920x1080|en-US|0|4|1"
+                h_val = js_djb2(t + ip + fp)
+
+                session.cookies.set('fw_jc', h_val, domain='.phoneky.com')
+                session.cookies.set(k, h_val, domain='.phoneky.com')
+
+                verified_url = urllib.parse.urljoin(r.url, redir_path)
+                r2 = session.get(verified_url, timeout=20, allow_redirects=True)
+                html = r2.text
+
+        tm = re.search(r'<title>(.*?)</title>', html, re.IGNORECASE)
+        if tm:
+            t_str = tm.group(1).split('|')[0].split('-')[0].strip()
+            if t_str and "Please wait" not in t_str and "Checking" not in t_str:
+                game_title = t_str
+
+        jar_matches = re.findall(r'href=["\'](https?://[^"\']+\.jar[^"\']*)["\']', html)
+        if jar_matches:
+            return jar_matches[0], game_title
+
+        wap_matches = re.findall(r'href=["\'](https?://[^"\']*downloadwap\.com/[^"\']*)["\']', html)
+        if wap_matches:
+            return wap_matches[0], game_title
+
     except Exception as e:
-        print(f"Error resolving Phoneky link: {e}")
+        print(f"Error solving Phoneky challenge: {e}")
 
     return phoneky_url, game_title
 
@@ -684,11 +711,11 @@ def fetch_jar():
     if not input_url:
         return jsonify({"success": False, "error": "No JAR or Phoneky link provided"}), 400
 
-    # 1. Resolve Phoneky link using mobile session
+    # 1. Automatically solve Phoneky challenge and resolve to real downloadwap link
     real_jar_url, page_title = resolve_phoneky_link(input_url)
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': '*/*',
         'Referer': 'https://mobile.phoneky.com/'
     }
@@ -696,6 +723,15 @@ def fetch_jar():
     try:
         r = requests.get(real_jar_url, headers=headers, stream=True, timeout=45, allow_redirects=True)
         if r.status_code == 200:
+            content = r.content
+
+            # VALIDATION: Real Java JAR files MUST begin with ZIP header 'PK' (0x50 0x4B)
+            if not content.startswith(b'PK'):
+                return jsonify({
+                    "success": False, 
+                    "error": "Phoneky challenge returned an HTML page. Please long-press the 'Download' button on Phoneky and copy the direct link!"
+                }), 400
+
             parsed_path = urllib.parse.urlparse(r.url).path
             raw_name = os.path.basename(parsed_path) or f"game_{uid}.jar"
             if not raw_name.endswith('.jar'):
@@ -706,10 +742,9 @@ def fetch_jar():
             out_jar_path = os.path.join(OUTPUT_DIR, out_jar_filename)
 
             with open(out_jar_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=16384):
-                    f.write(chunk)
+                f.write(content)
 
-            file_size = os.path.getsize(out_jar_path)
+            file_size = len(content)
             size_kb = round(file_size / 1024, 1)
 
             # Auto-generate paired .JAD descriptor for itel & Nokia native installer
