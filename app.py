@@ -101,18 +101,34 @@ def make_circle_crop(img, size, border_color=(250, 204, 21, 255), border_width=4
     out_draw.ellipse((1, 1, size - 2, size - 2), outline=border_color, width=border_width)
     return output
 
-def resolve_phoneky_link(phoneky_url):
+ def resolve_phoneky_link(phoneky_url):
     """Inspects a Phoneky download page and finds the real downloadwap.com .jar URL"""
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-    }
     if phoneky_url.endswith('.jar'):
         return phoneky_url, None
 
+    # Use a real Mobile User-Agent so mobile.phoneky.com doesn't block with 403
+    mobile_headers = {
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Upgrade-Insecure-Requests': '1'
+    }
+
     game_title = None
+    session = requests.Session()
+
     try:
-        r = requests.get(phoneky_url, headers=headers, timeout=20, allow_redirects=True)
+        # First try mobile URL
+        r = session.get(phoneky_url, headers=mobile_headers, timeout=20, allow_redirects=True)
+        
+        # If mobile gave 403, try desktop phoneky.com without "mobile."
+        if r.status_code == 403 and "mobile.phoneky.com" in phoneky_url:
+            desktop_url = phoneky_url.replace("mobile.phoneky.com", "phoneky.com")
+            r = session.get(desktop_url, headers=mobile_headers, timeout=20, allow_redirects=True)
+
         if r.status_code == 200:
             tm = re.search(r'<title>(.*?)</title>', r.text, re.IGNORECASE)
             if tm:
@@ -120,7 +136,7 @@ def resolve_phoneky_link(phoneky_url):
                 if t_str:
                     game_title = t_str
 
-            # 1. Search for .jar link in page
+            # 1. Search for direct .jar download links (downloadwap or general)
             jar_matches = re.findall(r'href=["\'](https?://[^"\']+\.jar[^"\']*)["\']', r.text)
             if jar_matches:
                 return jar_matches[0], game_title
@@ -129,11 +145,11 @@ def resolve_phoneky_link(phoneky_url):
             wap_matches = re.findall(r'href=["\'](https?://[^"\']*downloadwap\.com/[^"\']*)["\']', r.text)
             if wap_matches:
                 return wap_matches[0], game_title
+
     except Exception as e:
         print(f"Error resolving Phoneky link: {e}")
 
     return phoneky_url, game_title
-
 # ----------------- HOME STATUS ----------------- #
 @app.route("/", methods=["GET"])
 def home():
