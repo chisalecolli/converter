@@ -11,6 +11,9 @@ import yt_dlp
 
 app = Flask(__name__)
 
+from render_pv_dl import register_flask
+register_flask(app)
+
 BASE_DIR = "/tmp/pocketvault"
 INPUT_DIR = os.path.join(BASE_DIR, "inputs")
 OUTPUT_DIR = os.path.join(BASE_DIR, "converted")
