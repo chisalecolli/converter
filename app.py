@@ -3,6 +3,7 @@ import re
 import time
 import uuid
 import glob
+import math
 import subprocess
 import urllib.parse
 from flask import Flask, request, jsonify, send_from_directory
@@ -21,6 +22,7 @@ os.makedirs(INPUT_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(FONT_DIR, exist_ok=True)
 
+# Free Google Fonts mapping
 FONT_URLS = {
     "anton": "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf",
     "bangers": "https://github.com/google/fonts/raw/main/ofl/bangers/Bangers-Regular.ttf",
@@ -32,6 +34,7 @@ FONT_URLS = {
 }
 
 def cleanup_old_files():
+    """Removes temporary files older than 2 hours to keep disk space free"""
     now = time.time()
     for folder in [INPUT_DIR, OUTPUT_DIR]:
         for filepath in glob.glob(os.path.join(folder, "*")):
@@ -67,9 +70,10 @@ def draw_vector_icon(draw, icon_name, cx, cy, size, color):
     if icon_name == "crown":
         pts = [(cx - hs, cy + hs // 2), (cx - hs, cy - hs // 4), (cx - hs // 2, cy), (cx, cy - hs // 2), (cx + hs // 2, cy), (cx + hs, cy - hs // 4), (cx + hs, cy + hs // 2)]
         draw.polygon(pts, fill=color)
+        for pt in [(cx - hs, cy - hs // 4), (cx, cy - hs // 2), (cx + hs, cy - hs // 4)]:
+            draw.ellipse((pt[0]-2, pt[1]-4, pt[0]+2, pt[1]), fill=(255, 255, 255, 255))
     elif icon_name == "star":
         pts = []
-        import math
         for i in range(10):
             r = hs if i % 2 == 0 else hs // 2
             angle = i * math.pi / 5 - math.pi / 2
@@ -97,11 +101,45 @@ def make_circle_crop(img, size, border_color=(250, 204, 21, 255), border_width=4
     out_draw.ellipse((1, 1, size - 2, size - 2), outline=border_color, width=border_width)
     return output
 
+def resolve_phoneky_link(phoneky_url):
+    """Inspects a Phoneky download page and finds the real downloadwap.com .jar URL"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+    }
+    if phoneky_url.endswith('.jar'):
+        return phoneky_url, None
+
+    game_title = None
+    try:
+        r = requests.get(phoneky_url, headers=headers, timeout=20, allow_redirects=True)
+        if r.status_code == 200:
+            tm = re.search(r'<title>(.*?)</title>', r.text, re.IGNORECASE)
+            if tm:
+                t_str = tm.group(1).split('|')[0].split('-')[0].strip()
+                if t_str:
+                    game_title = t_str
+
+            # 1. Search for .jar link in page
+            jar_matches = re.findall(r'href=["\'](https?://[^"\']+\.jar[^"\']*)["\']', r.text)
+            if jar_matches:
+                return jar_matches[0], game_title
+
+            # 2. Search for downloadwap link
+            wap_matches = re.findall(r'href=["\'](https?://[^"\']*downloadwap\.com/[^"\']*)["\']', r.text)
+            if wap_matches:
+                return wap_matches[0], game_title
+    except Exception as e:
+        print(f"Error resolving Phoneky link: {e}")
+
+    return phoneky_url, game_title
+
+# ----------------- HOME STATUS ----------------- #
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({"status": "PocketVault Master Server Ready (Converter, Logo, Audio FX, Memes, Wallpapers)"})
+    return jsonify({"status": "PocketVault Master Server Ready (2yxa, Logo Studio, Audio FX, Memes, Wallpapers, Java Leech)"})
 
-# ----------------- 1. MEDIA CONVERTER ----------------- #
+# ----------------- 1. 2YXA MEDIA CONVERTER ----------------- #
 @app.route("/convert", methods=["POST"])
 def convert():
     cleanup_old_files()
@@ -224,7 +262,7 @@ def convert():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-# ----------------- 2. LOGO STUDIO ----------------- #
+# ----------------- 2. LOGO STUDIO V3 ----------------- #
 @app.route("/logo", methods=["POST"])
 def generate_logo():
     cleanup_old_files()
@@ -398,7 +436,6 @@ def generate_logo():
 
     return jsonify({"success": True, "title": text, "download_url": f"{request.host_url.rstrip('/')}/download/{out_filename}"})
 
-
 # ----------------- 3. AUDIO EFFECTS & REMIXER STUDIO ----------------- #
 @app.route("/audio_fx", methods=["POST"])
 def audio_effects():
@@ -465,24 +502,17 @@ def audio_effects():
     out_filename = f"{original_title[:25]}_{effect}_{uid}.mp3"
     output_path = os.path.join(OUTPUT_DIR, out_filename)
 
-    # Master Audio Effect Filters
     if effect == "nightcore":
-        # 1.25x Speed + High Vocal Pitch
         af_filter = "asetrate=44100*1.25,aresample=44100,atempo=1.03"
     elif effect == "slowed_reverb":
-        # Deep Slow + Atmospheric Echo/Reverb
         af_filter = "asetrate=44100*0.83,aresample=44100,aecho=0.8:0.88:60:0.4"
     elif effect == "mega_bass":
-        # Punchy Subwoofer Low-End Boost
         af_filter = "equalizer=f=60:width_type=o:width=2:g=15,equalizer=f=100:width_type=o:width=2:g=10"
     elif effect == "8d_audio":
-        # 8D Panning Audio across earphones
         af_filter = "apulsator=mode=sine:hz=0.125"
     elif effect == "karaoke":
-        # Vocal reduction (phase cancellation)
         af_filter = "pan=stereo|c0=c0-c1|c1=c1-c0"
     elif effect == "chipmunk":
-        # Ultra High Pitch
         af_filter = "asetrate=44100*1.55,aresample=44100"
     else:
         af_filter = "volume=1.0"
@@ -504,14 +534,13 @@ def audio_effects():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
-
 # ----------------- 4. MEME GENERATOR ----------------- #
 @app.route("/meme", methods=["POST"])
 def generate_meme():
     cleanup_old_files()
     top_text = request.form.get("top_text", "").strip().upper()
     bottom_text = request.form.get("bottom_text", "").strip().upper()
-    meme_style = request.form.get("meme_style", "classic") # classic or modern_card
+    meme_style = request.form.get("meme_style", "classic")
 
     if "image" not in request.files:
         return jsonify({"success": False, "error": "No image uploaded"}), 400
@@ -524,7 +553,6 @@ def generate_meme():
         return jsonify({"success": False, "error": "Invalid image file"}), 400
 
     w, h = img.size
-    # Normalize to max width 800 for speed
     if w > 800:
         new_h = int(h * (800 / w))
         img = img.resize((800, new_h), Image.Resampling.LANCZOS)
@@ -538,15 +566,12 @@ def generate_meme():
         bbox = draw.textbbox((0, 0), txt, font=font)
         tw = bbox[2] - bbox[0]
         tx = center_x - (tw // 2)
-        # Thick black outline
         for dx in range(-stroke_w, stroke_w + 1):
             for dy in range(-stroke_w, stroke_w + 1):
                 draw.text((tx + dx, top_y + dy), txt, font=font, fill=(0, 0, 0, 255))
-        # Pure white center
         draw.text((tx, top_y), txt, font=font, fill=(255, 255, 255, 255))
 
     if meme_style == "modern_card":
-        # White top banner with crisp black bold caption
         banner_h = max(70, int(font_size * 2.2))
         final_img = Image.new("RGBA", (w, h + banner_h), (255, 255, 255, 255))
         final_img.paste(img, (0, banner_h))
@@ -557,7 +582,6 @@ def generate_meme():
         cw, ch = cbox[2] - cbox[0], cbox[3] - cbox[1]
         draw.text(((w - cw) // 2, (banner_h - ch) // 2), caption, font=card_font, fill=(15, 23, 42, 255))
     else:
-        # Classic Top & Bottom Impact Meme
         final_img = img
         draw = ImageDraw.Draw(final_img)
         if top_text:
@@ -574,13 +598,12 @@ def generate_meme():
 
     return jsonify({"success": True, "download_url": f"{request.host_url.rstrip('/')}/download/{out_filename}"})
 
-
 # ----------------- 5. WALLPAPER RESIZER & FILTER ----------------- #
 @app.route("/wallpaper", methods=["POST"])
 def make_wallpaper():
     cleanup_old_files()
     preset = request.form.get("preset", "nokia_240").lower()
-    fit_mode = request.form.get("fit_mode", "blur_bars") # blur_bars or crop_fill
+    fit_mode = request.form.get("fit_mode", "blur_bars")
     filter_style = request.form.get("filter", "none").lower()
     watermark = request.form.get("watermark", "").strip()
 
@@ -594,7 +617,6 @@ def make_wallpaper():
     except Exception:
         return jsonify({"success": False, "error": "Invalid image"}), 400
 
-    # Phone Screen Dimensions
     sizes = {
         "nokia_128": (128, 160),
         "nokia_176": (176, 220),
@@ -606,21 +628,17 @@ def make_wallpaper():
     }
     tw, th = sizes.get(preset, (240, 320))
 
-    # Fit & Background Handling
     if fit_mode == "crop_fill":
         canvas = ImageOps.fit(img, (tw, th), centering=(0.5, 0.5))
     else:
-        # Pro Blurred Backdrop for no black bars
         bg = ImageOps.fit(img, (tw, th), centering=(0.5, 0.5))
         bg = bg.filter(ImageFilter.GaussianBlur(radius=20))
-        # Overlay original image scaled inside
         fg = img.copy()
         fg.thumbnail((tw, th), Image.Resampling.LANCZOS)
         fg_w, fg_h = fg.size
         canvas = bg
         canvas.paste(fg, ((tw - fg_w) // 2, (th - fg_h) // 2), fg)
 
-    # Apply Artistic Filters
     if filter_style == "bw":
         canvas = ImageOps.grayscale(canvas).convert("RGBA")
         canvas = ImageEnhance.Contrast(canvas).enhance(1.4)
@@ -631,7 +649,6 @@ def make_wallpaper():
         canvas = ImageEnhance.Contrast(canvas).enhance(1.3)
         canvas = ImageEnhance.Color(canvas).enhance(1.5)
 
-    # Optional Corner Watermark
     if watermark:
         draw = ImageDraw.Draw(canvas)
         font_sz = max(10, int(th * 0.025))
@@ -645,11 +662,27 @@ def make_wallpaper():
 
     return jsonify({"success": True, "download_url": f"{request.host_url.rstrip('/')}/download/{out_filename}"})
 
+# ----------------- 6. JAVA (.JAR & .JAD) LEECH & DOWNLOAD ----------------- #
+@app.route("/jar_fetch", methods=["POST"])
+def fetch_jar():
+    cleanup_old_files()
+    input_url = request.form.get("url", "").strip()
+    uid = str(uuid.uuid4())[:8]
 
-# ----------------- DIRECT DOWNLOAD ----------------- #
-@app.route("/download/<path:filename>", methods=["GET"])
-def download_file(filename):
-    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True)
+    if not input_url:
+        return jsonify({"success": False, "error": "No JAR or Phoneky link provided"}), 400
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    # 1. Automatically resolve Phoneky link to real downloadwap.com direct .jar
+    real_jar_url, page_title = resolve_phoneky_link(input_url)
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Referer': 'https://mobile.phoneky.com/'
+    }
+
+    try:
+        r = requests.get(real_jar_url, headers=headers, stream=True, timeout=45, allow_redirects=True)
+        if r.status_code == 200:
+            parsed_path = urllib.parse.urlparse(r.url).path
+         
