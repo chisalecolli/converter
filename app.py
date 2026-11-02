@@ -12,7 +12,6 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 app = Flask(__name__)
 
-
 BASE_DIR = "/tmp/pocketvault"
 INPUT_DIR = os.path.join(BASE_DIR, "inputs")
 OUTPUT_DIR = os.path.join(BASE_DIR, "converted")
