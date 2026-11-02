@@ -685,4 +685,74 @@ def fetch_jar():
         r = requests.get(real_jar_url, headers=headers, stream=True, timeout=45, allow_redirects=True)
         if r.status_code == 200:
             parsed_path = urllib.parse.urlparse(r.url).path
-         
+            raw_name = os.path.basename(parsed_path) or f"game_{uid}.jar"
+            if not raw_name.endswith('.jar'):
+                raw_name += ".jar"
+
+            safe_name = "".join(c for c in raw_name if c.isalnum() or c in ('.', '_', '-'))
+            out_jar_filename = f"{uid}_{safe_name}"
+            out_jar_path = os.path.join(OUTPUT_DIR, out_jar_filename)
+
+            with open(out_jar_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=16384):
+                    f.write(chunk)
+
+            file_size = os.path.getsize(out_jar_path)
+            size_kb = round(file_size / 1024, 1)
+
+            # Auto-generate paired .JAD descriptor for itel & Nokia native installer
+            game_title = page_title if page_title else safe_name.replace('.jar', '')
+            out_jad_filename = out_jar_filename.replace('.jar', '.jad')
+            out_jad_path = os.path.join(OUTPUT_DIR, out_jad_filename)
+
+            jar_download_url = f"{request.host_url.rstrip('/')}/download/{out_jar_filename}"
+
+            jad_content = (
+                f"MIDlet-Name: {game_title}\n"
+                f"MIDlet-Version: 1.0.0\n"
+                f"MIDlet-Vendor: PocketVault\n"
+                f"MIDlet-Jar-URL: {jar_download_url}\n"
+                f"MIDlet-Jar-Size: {file_size}\n"
+            )
+            with open(out_jad_path, 'w', encoding='utf-8') as jf:
+                jf.write(jad_content)
+
+            jad_download_url = f"{request.host_url.rstrip('/')}/download/{out_jad_filename}"
+
+            return jsonify({
+                "success": True,
+                "title": game_title,
+                "size": f"{size_kb} KB",
+                "jar_url": jar_download_url,
+                "jad_url": jad_download_url
+            })
+        else:
+            return jsonify({"success": False, "error": f"Download server returned HTTP {r.status_code}"}), 400
+
+    except Exception as e:
+        return jsonify({"success": False, "error": f"Failed to download JAR: {str(e)}"}), 500
+
+# ----------------- DIRECT FILE DOWNLOAD (WITH PROPER MIME TYPES) ----------------- #
+@app.route("/download/<path:filename>", methods=["GET"])
+def download_file(filename):
+    # Sends official Java headers so Dorado on itel triggers the native installer
+    mimetype = None
+    if filename.endswith('.jar'):
+        mimetype = "application/java-archive"
+    elif filename.endswith('.jad'):
+        mimetype = "text/vnd.sun.j2me.app-descriptor"
+    elif filename.endswith('.3gp'):
+        mimetype = "video/3gpp"
+    elif filename.endswith('.mp4'):
+        mimetype = "video/mp4"
+    elif filename.endswith('.mp3'):
+        mimetype = "audio/mpeg"
+    elif filename.endswith('.png'):
+        mimetype = "image/png"
+    elif filename.endswith(('.jpg', '.jpeg')):
+        mimetype = "image/jpeg"
+
+    return send_from_directory(OUTPUT_DIR, filename, as_attachment=True, mimetype=mimetype)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=10000)
