@@ -101,12 +101,11 @@ def make_circle_crop(img, size, border_color=(250, 204, 21, 255), border_width=4
     out_draw.ellipse((1, 1, size - 2, size - 2), outline=border_color, width=border_width)
     return output
 
- def resolve_phoneky_link(phoneky_url):
-    """Inspects a Phoneky download page and finds the real downloadwap.com .jar URL"""
+def resolve_phoneky_link(phoneky_url):
+    """Inspects a Phoneky download page and finds the real downloadwap.com .jar URL using mobile headers"""
     if phoneky_url.endswith('.jar'):
         return phoneky_url, None
 
-    # Use a real Mobile User-Agent so mobile.phoneky.com doesn't block with 403
     mobile_headers = {
         'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
@@ -121,10 +120,7 @@ def make_circle_crop(img, size, border_color=(250, 204, 21, 255), border_width=4
     session = requests.Session()
 
     try:
-        # First try mobile URL
         r = session.get(phoneky_url, headers=mobile_headers, timeout=20, allow_redirects=True)
-        
-        # If mobile gave 403, try desktop phoneky.com without "mobile."
         if r.status_code == 403 and "mobile.phoneky.com" in phoneky_url:
             desktop_url = phoneky_url.replace("mobile.phoneky.com", "phoneky.com")
             r = session.get(desktop_url, headers=mobile_headers, timeout=20, allow_redirects=True)
@@ -136,7 +132,7 @@ def make_circle_crop(img, size, border_color=(250, 204, 21, 255), border_width=4
                 if t_str:
                     game_title = t_str
 
-            # 1. Search for direct .jar download links (downloadwap or general)
+            # 1. Search for .jar link in page
             jar_matches = re.findall(r'href=["\'](https?://[^"\']+\.jar[^"\']*)["\']', r.text)
             if jar_matches:
                 return jar_matches[0], game_title
@@ -145,11 +141,11 @@ def make_circle_crop(img, size, border_color=(250, 204, 21, 255), border_width=4
             wap_matches = re.findall(r'href=["\'](https?://[^"\']*downloadwap\.com/[^"\']*)["\']', r.text)
             if wap_matches:
                 return wap_matches[0], game_title
-
     except Exception as e:
         print(f"Error resolving Phoneky link: {e}")
 
     return phoneky_url, game_title
+
 # ----------------- HOME STATUS ----------------- #
 @app.route("/", methods=["GET"])
 def home():
@@ -688,11 +684,11 @@ def fetch_jar():
     if not input_url:
         return jsonify({"success": False, "error": "No JAR or Phoneky link provided"}), 400
 
-    # 1. Automatically resolve Phoneky link to real downloadwap.com direct .jar
+    # 1. Resolve Phoneky link using mobile session
     real_jar_url, page_title = resolve_phoneky_link(input_url)
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
         'Accept': '*/*',
         'Referer': 'https://mobile.phoneky.com/'
     }
@@ -751,7 +747,6 @@ def fetch_jar():
 # ----------------- DIRECT FILE DOWNLOAD (WITH PROPER MIME TYPES) ----------------- #
 @app.route("/download/<path:filename>", methods=["GET"])
 def download_file(filename):
-    # Sends official Java headers so Dorado on itel triggers the native installer
     mimetype = None
     if filename.endswith('.jar'):
         mimetype = "application/java-archive"
